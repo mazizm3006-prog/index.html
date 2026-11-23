@@ -107,6 +107,8 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
       <div><label for="tOpen">زمان باز شدن</label><input id="tOpen" type="datetime-local"></div>
       <div><label for="tClose">زمان بسته شدن</label><input id="tClose" type="datetime-local"></div>
     </div>
+    <label for="durIn">مدت معامله به ثانیه (اختیاری، برای معامله‌ی زیر یک دقیقه)</label>
+    <input id="durIn" type="number" inputmode="numeric" step="1" min="0" placeholder="مثلاً 45">
 
     <div class="row">
       <div><label for="setup">ستاپ</label><select id="setup"></select></div>
@@ -172,6 +174,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
       <div><label for="s_offset">اختلاف ساعت بروکر با گوشی (ساعت)</label><input id="s_offset" type="number" step="0.5"></div>
       <div><label for="s_setups">ستاپ‌ها (با ویرگول)</label><input id="s_setups" type="text" dir="ltr"></div>
     </div>
+    <div class="row"><div><label for="s_acct">نوع حساب</label><select id="s_acct"><option value="eval">ارزیابی (چالش)</option><option value="funded">Funded (ریل)</option></select></div></div>
     <div class="muted" style="margin-top:8px">مرز «روز» بر اساس ساعت گوشی به‌علاوه‌ی اختلاف بالاست. اگه ساعت سرور Onyx رو می‌دونی، اینجا وارد کن.</div>
     <button class="primary" onclick="saveSettings()">ذخیره تنظیمات</button>
   </div>
@@ -194,13 +197,22 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 /* ---------- storage: Telegram CloudStorage -> localStorage -> memory ---------- */
 const mem = {};
 let mode = "temp";               // "cloud" | "local" | "temp"
-const TGW = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) ? window.Telegram.WebApp : null;
+const TGW = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+let diag = "";
 const CS = TGW && TGW.CloudStorage ? TGW.CloudStorage : null;
 const CHUNK = 1500;              // small chunks, to stay far below the per-value size limit
 const cs = (m, ...a) => new Promise((res, rej) => CS[m](...a, (e, v) => e ? rej(e) : res(v)));
 
-function detectMode(){
-  if(CS){ mode = "cloud"; return; }
+async function detectMode(){
+  diag = "script:" + (window.Telegram ? "yes" : "no") + " | WebApp:" + (TGW ? "yes" : "no") +
+         " | initData:" + (TGW && TGW.initData ? TGW.initData.length : 0) + " | CloudStorage:" + (CS ? "yes" : "no") +
+         " | v:" + ((TGW && TGW.version) || "-");
+  if(CS){
+    try{
+      await Promise.race([cs("setItem","probe","1"), new Promise((_,rej)=>setTimeout(()=>rej("timeout"),3000))]);
+      mode = "cloud"; return;
+    }catch(e){ diag += " | cloud-probe:" + ((e && e.message) ? e.message : String(e)); }
+  }
   try{ localStorage.setItem("_t","1"); localStorage.removeItem("_t"); mode = "local"; }catch(e){ mode = "temp"; }
 }
 
@@ -238,11 +250,12 @@ function showBadge(){
   const t = {cloud:"ذخیره‌سازی: ابر تلگرام (با حساب تلگرامت همگام می‌شه)",
              local:"ذخیره‌سازی: حافظه‌ی مرورگر (ممکنه پاک بشه، پشتیبان بگیر)",
              temp:"ذخیره‌سازی: موقت، با بستن صفحه پاک می‌شه"}[mode];
-  const el = document.getElementById("modeBadge"); if(el) el.textContent = t;
+  const el = document.getElementById("modeBadge");
+  if(el){ el.style.whiteSpace = "pre-line"; el.textContent = t + (mode!=="cloud" ? "\n" + diag : ""); }
 }
 
 /* ---------- state ---------- */
-const DEF = { initial:3000, riskPct:0.5, dailyCap:2, monthlyCap:8, onyxDaily:5, onyxTotal:12,
+const DEF = { acct:"eval", initial:3000, riskPct:0.5, dailyCap:2, monthlyCap:8, onyxDaily:5, onyxTotal:12,
               pip:10, target:240, cons:80, minDur:60, offset:0,
               setups:"rejection,engulfing,breakout_retest,other" };
 let S = {...DEF};
@@ -265,12 +278,12 @@ const cp = t => (t.pnl>0 && t.dur < S.minDur) ? 0 : t.pnl;
 
 /* ---------- init ---------- */
 async function init(){
-  detectMode(); showBadge();
+  await detectMode(); showBadge();
   if(TGW){ try{ TGW.ready(); TGW.expand(); }catch(e){} }
   const s = await sget("journal:settings"); if(s) S = {...DEF, ...s};
   const t = await sget("journal:trades"); if(Array.isArray(t)) T = t;
   fillSetupOptions(); fillSettings(); resetTimes(); render(); updatePreview();
-  ["reason","symbol","entry","stop","exit","lots","tOpen","tClose","setup","tf","trend","conf","followed","pnlIn","riskIn"]
+  ["reason","symbol","entry","stop","exit","lots","tOpen","tClose","setup","tf","trend","conf","followed","pnlIn","riskIn","durIn"]
     .forEach(id=>{ $(id).addEventListener("input", updatePreview); $(id).addEventListener("change", updatePreview); });
 }
 function fillSetupOptions(){
@@ -279,13 +292,13 @@ function fillSetupOptions(){
 function fillSettings(){
   $("s_initial").value=S.initial; $("s_risk").value=S.riskPct; $("s_daily").value=S.dailyCap; $("s_monthly").value=S.monthlyCap;
   $("s_odaily").value=S.onyxDaily; $("s_ototal").value=S.onyxTotal; $("s_target").value=S.target; $("s_cons").value=S.cons;
-  $("s_pip").value=S.pip; $("s_mindur").value=S.minDur; $("s_offset").value=S.offset; $("s_setups").value=S.setups;
+  $("s_acct").value=S.acct; $("s_pip").value=S.pip; $("s_mindur").value=S.minDur; $("s_offset").value=S.offset; $("s_setups").value=S.setups;
 }
 function resetTimes(){ const now = Date.now(); $("tClose").value = localInput(now); $("tOpen").value = localInput(now-5*60000); }
 
 async function saveSettings(){
   const n = (id,def)=>{ const v = parseFloat($(id).value); return isNaN(v)?def:v; };
-  S = { initial:n("s_initial",DEF.initial), riskPct:n("s_risk",DEF.riskPct), dailyCap:n("s_daily",DEF.dailyCap), monthlyCap:n("s_monthly",DEF.monthlyCap),
+  S = { acct:$("s_acct").value, initial:n("s_initial",DEF.initial), riskPct:n("s_risk",DEF.riskPct), dailyCap:n("s_daily",DEF.dailyCap), monthlyCap:n("s_monthly",DEF.monthlyCap),
         onyxDaily:n("s_odaily",DEF.onyxDaily), onyxTotal:n("s_ototal",DEF.onyxTotal), target:n("s_target",DEF.target), cons:n("s_cons",DEF.cons),
         pip:n("s_pip",DEF.pip), minDur:n("s_mindur",DEF.minDur), offset:n("s_offset",0), setups:$("s_setups").value.trim()||DEF.setups };
   await sset("journal:settings", S);
@@ -299,16 +312,35 @@ function showTab(n){
 }
 function setSide(s){ side=s; $("b-buy").classList.toggle("on", s==="buy"); $("b-sell").classList.toggle("on", s==="sell"); updatePreview(); }
 
+/* ---------- helpers ---------- */
+function spansSat(a,b){
+  for(let d=Math.floor(a/864e5)*864e5; d<=b; d+=864e5){ if(new Date(d).getUTCDay()===6) return true; }
+  return false;
+}
+function weekKey(ms){
+  const d = new Date(ms + S.offset*3600000), l = new Date(d.getTime() - d.getTimezoneOffset()*60000);
+  l.setUTCDate(l.getUTCDate() - (l.getUTCDay()+6)%7);
+  return l.toISOString().slice(0,10);
+}
+function weekHtml(){
+  const now = Date.now(), wk = weekKey(now);
+  const n = T.filter(t=>weekKey(t.open)===wk).length;
+  const d = new Date(now + S.offset*3600000), l = new Date(d.getTime() - d.getTimezoneOffset()*60000);
+  const dow = (l.getUTCDay()+6)%7;                 // Monday = 0
+  const warn = n===0 && dow>=3;
+  return `<div class="${warn?'flag bad':'muted'}" style="margin-top:6px">فعالیت هفتگی: <span class="num">${n}</span> معامله این هفته (طبق قوانین حداقل ۱ لازمه).${warn?' هنوز معامله‌ای نداری و هفته داره تموم می‌شه.':''}</div>`;
+}
+
 /* ---------- trade computation ---------- */
 function build(){
   const sym = $("symbol").value;
   const entry = parseFloat($("entry").value), stop = parseFloat($("stop").value), exit = parseFloat($("exit").value), lots = parseFloat($("lots").value);
   const open = new Date($("tOpen").value).getTime(), close = new Date($("tClose").value).getTime();
-  const pnlIn = parseFloat($("pnlIn").value), riskIn = parseFloat($("riskIn").value);
+  const pnlIn = parseFloat($("pnlIn").value), riskIn = parseFloat($("riskIn").value), durIn = parseFloat($("durIn").value);
   const errors = [], flags = [];
   if([entry,stop,exit,lots].some(isNaN)) errors.push("قیمت ورود، حد ضرر، قیمت خروج و حجم رو پر کن.");
   if(isNaN(open)||isNaN(close)) errors.push("زمان باز و بسته شدن رو وارد کن.");
-  else if(close<=open) errors.push("زمان بسته شدن باید بعد از زمان باز شدن باشه.");
+  else if(close<=open && isNaN(durIn)) errors.push("زمان بسته شدن باید بعد از زمان باز شدن باشه. اگه معامله زیر یک دقیقه بود، «مدت (ثانیه)» رو پر کن.");
   if(!isNaN(entry)&&!isNaN(stop)){
     if(side==="buy" && stop>=entry) errors.push("برای خرید، حد ضرر باید زیر قیمت ورود باشه.");
     if(side==="sell" && stop<=entry) errors.push("برای فروش، حد ضرر باید بالای قیمت ورود باشه.");
@@ -328,7 +360,8 @@ function build(){
       errors.push("برای این نماد، سود/ضرر و ریسک (دلار) رو از MT5 وارد کن.");
     }
   }
-  const dur = (!isNaN(open)&&!isNaN(close)&&close>open) ? Math.round((close-open)/1000) : null;
+  const closeMs = (!isNaN(durIn) && !isNaN(open)) ? open + Math.max(0,durIn)*1000 : close;
+  const dur = (!isNaN(open) && !isNaN(closeMs) && (closeMs>open || !isNaN(durIn))) ? Math.round((closeMs-open)/1000) : null;
   const R = (pnl!==null && risk) ? pnl/risk : null;
   const limit = S.initial*S.riskPct/100;
   if(risk!==null && risk > limit*1.1) flags.push({bad:true, t:`ریسک ${f2(risk)} دلار از سقف تو (${f2(limit)} دلار) بیشتره.`});
@@ -338,8 +371,20 @@ function build(){
       : `مدت معامله ${dur} ثانیه است (زیر ${S.minDur} ثانیه). ضرر همچنان حساب می‌شه.`});
   }
   if(!$("followed").checked) flags.push({bad:false, t:"این معامله خارج از قوانین خودت بوده."});
+  if(S.acct==="funded" && dur!==null && dur<10) flags.push({bad:true, t:"حساب Funded: معامله‌ی زیر ۱۰ ثانیه طبق صفحه‌ی قوانین ممنوعه."});
+  const lastLots = T.slice(-20).map(t=>t.lots).filter(x=>x>0).sort((a,b)=>a-b);
+  if(lastLots.length>=5 && !isNaN(lots)){
+    const med = lastLots[Math.floor(lastLots.length/2)];
+    if(lots>med*2 || lots<med/2) flags.push({bad:false, t:`حجم ${lots} با حجم معمولت (میانه ${med}) خیلی فرق داره. «پرش ناگهانی حجم» ممکنه اخطار بده.`});
+  }
+  if(!isNaN(open) && !isNaN(closeMs) && closeMs>=open){
+    const ov = T.filter(t=>t.symbol===sym && t.open<closeMs && open<t.close);
+    if(ov.some(t=>t.side!==side)) flags.push({bad:true, t:"با یک معامله‌ی مخالف هم‌زمان بوده: ممکنه هج حساب بشه."});
+    else if(ov.length) flags.push({bad:false, t:"با معامله‌ی دیگه‌ای هم‌زمان بوده (برخلاف قانون تک‌معامله‌ی خودت)."});
+    if(S.acct==="funded" && spansSat(open,closeMs)) flags.push({bad:true, t:"معامله از آخر هفته رد شده. در Funded ممکنه آزاد نباشه (از پشتیبانی بپرس)."});
+  }
   return { errors, flags, trade: errors.length||pnl===null ? null : {
-    id: Date.now(), open, close, symbol:sym, side, entry, stop, exit, lots,
+    id: Date.now(), open, close: closeMs, symbol:sym, side, entry, stop, exit, lots,
     risk: +f2(risk), pnl: +f2(pnl), R: R===null?0:+f2(R), pips: pips===null?null:+pips.toFixed(1), dur,
     setup:$("setup").value, tf:$("tf").value, trend:$("trend").value, conf:+$("conf").value,
     followed:$("followed").checked, reason:$("reason").value.trim() }, pips, risk, pnl, R, dur };
@@ -373,7 +418,7 @@ async function saveTrade(){
   T.push(b.trade);
   await sset("journal:trades", T);
   $("saveMsg").textContent = "ذخیره شد." + (mode==="temp" ? " (فقط موقت: تا بسته شدن صفحه می‌مونه. از بخش پشتیبان‌گیری متن CSV رو نگه دار.)" : "");
-  ["entry","stop","exit","reason","pnlIn","riskIn"].forEach(id=>$(id).value="");
+  ["entry","stop","exit","reason","pnlIn","riskIn","durIn"].forEach(id=>$(id).value="");
   $("followed").checked = true; resetTimes(); updatePreview(); render();
 }
 
@@ -409,7 +454,7 @@ function renderGauge(){
       <div><span class="muted">کف روزانه</span><br><b class="num">${f2(dFloor)}$</b></div>
       <div><span class="muted">کف کل</span><br><b class="num">${f2(tFloor)}$</b></div>
     </div>
-    <div class="muted" style="margin-top:6px">ضرر این ماه: <span class="num">${mLoss.toFixed(2)}%</span> از سقف <span class="num">${S.monthlyCap}%</span>. فقط معاملات بسته‌شده حساب می‌شن و ضرر معاملات باز (شناور) نه.</div>`;
+    <div class="muted" style="margin-top:6px">ضرر این ماه: <span class="num">${mLoss.toFixed(2)}%</span> از سقف <span class="num">${S.monthlyCap}%</span>. فقط معاملات بسته‌شده حساب می‌شن و ضرر معاملات باز (شناور) نه.</div>${weekHtml()}`;
 }
 
 /* ---------- list ---------- */
